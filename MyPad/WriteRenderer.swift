@@ -1,5 +1,6 @@
 import UIKit
 import WebKit
+import CoreImage
 
 /// `mypad write`: Markdown, HTML or SVG rendered once by WebKit into a PNG reference. Main thread only.
 enum WriteRenderer {
@@ -54,6 +55,25 @@ enum WriteRenderer {
             return head + "<main id=\"page\"></main><script>\(library)</script>"
                 + "<script>document.getElementById('page').innerHTML = marked.parse(\(literal), {gfm: true});</script></body></html>"
         }
+    }
+
+    /// Dark-board version of a written reference: colors inverted, then hues turned back, so text goes light and blue stays blue.
+    static func darkVariant(_ image: UIImage) -> UIImage? {
+        guard let input = CIImage(image: image) else { return nil }
+        let output = input.applyingFilter("CIColorInvert").applyingFilter("CIHueAdjust", parameters: [kCIInputAngleKey: CGFloat.pi])
+        guard let cg = CIContext().createCGImage(output, from: input.extent) else { return nil }
+        return UIImage(cgImage: cg, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    /// Whether the top-left pixel is fully transparent, as on a write; uploaded diagrams and screenshots are opaque.
+    static func hasTransparentBackground(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage, let corner = cg.cropping(to: CGRect(x: 0, y: 0, width: 1, height: 1)) else { return false }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        guard let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return false }
+        context.draw(corner, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return pixel[3] == 0
     }
 
     /// Largest scale up to 4x board points that keeps the PNG within the 20M-pixel image limit.

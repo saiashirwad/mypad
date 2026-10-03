@@ -10,6 +10,9 @@ struct CanvasArtifact: Codable {
     let y: CGFloat
     let width: CGFloat
     let height: CGFloat
+    /// Written text and drawings are shown color-inverted (hues kept) on the dark board; uploaded PNGs are not.
+    /// Unset on references from before this flag: those count as written when their background is transparent.
+    var adaptive: Bool? = nil
     var frame: CGRect { CGRect(x: x, y: y, width: width, height: height) }
 }
 
@@ -114,6 +117,7 @@ struct BackupReference: Codable {
     let title: String
     let file: String
     let frame: Frame
+    var adaptive: Bool? = nil
 }
 
 struct BackupManifest: Codable {
@@ -318,7 +322,7 @@ final class AgentBridge {
                     guard let png = image.pngData() else { throw BridgeFailure("Could not encode image") }
                     try png.write(to: store.root.appendingPathComponent("assets/" + file), options: .atomic)
                     let artifact = CanvasArtifact(id: command.id, title: command.title, imageFile: file,
-                        x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+                        x: frame.minX, y: frame.minY, width: frame.width, height: frame.height, adaptive: false)
                     try store.commit(artifacts: artifacts + [artifact], drawing: store.drawing,
                                      view: view, commandID: command.id)
                     changed(false, artifact.frame)
@@ -404,7 +408,8 @@ final class AgentBridge {
         try png.write(to: store.root.appendingPathComponent("assets/" + file), options: .atomic)
         let title = command.title == "Reference" ? (old?.title ?? command.title) : command.title
         let artifact = CanvasArtifact(id: old?.id ?? command.id, title: title, imageFile: file,
-            x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+            x: frame.minX, y: frame.minY, width: frame.width, height: frame.height,
+            adaptive: command.kind == "write")
         var next = artifacts
         if let old, let index = next.firstIndex(where: { $0.id == old.id }) { next[index] = artifact } else { next.append(artifact) }
         try store.commit(artifacts: next, drawing: store.drawing, view: view, commandID: command.id)
@@ -441,7 +446,8 @@ final class AgentBridge {
             try Data(contentsOf: store.root.appendingPathComponent("assets/" + artifact.imageFile))
                 .write(to: folder.appendingPathComponent(path), options: .atomic)
             return BackupReference(id: artifact.id, title: artifact.title, file: path,
-                frame: .init(x: artifact.x, y: artifact.y, width: artifact.width, height: artifact.height))
+                frame: .init(x: artifact.x, y: artifact.y, width: artifact.width, height: artifact.height),
+                adaptive: artifact.adaptive)
         }
         try store.drawing.dataRepresentation().write(to: folder.appendingPathComponent("ink.drawing"), options: .atomic)
         guard let png = preview.pngData() else { throw BridgeFailure("Could not encode preview") }
@@ -480,7 +486,7 @@ final class AgentBridge {
             let file = "\(UUID().uuidString.lowercased()).png"
             try data.write(to: store.root.appendingPathComponent("assets/" + file), options: .atomic)
             restored.append(CanvasArtifact(id: ref.id, title: ref.title, imageFile: file,
-                x: frame.minX, y: frame.minY, width: frame.width, height: frame.height))
+                x: frame.minX, y: frame.minY, width: frame.width, height: frame.height, adaptive: ref.adaptive))
         }
         try store.commit(artifacts: restored, drawing: drawing, view: manifest.view, commandID: command.id)
     }

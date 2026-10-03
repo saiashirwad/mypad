@@ -19,8 +19,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
-        // Keep ink and paper consistent even when the iPad uses Dark Mode.
-        window.overrideUserInterfaceStyle = .light
         window.rootViewController = CanvasViewController()
         window.makeKeyAndVisible()
         self.window = window

@@ -147,6 +147,25 @@ assert(centered.width == 300 && centered.height == 100 && centered.minX == 350)
 assert(store.drawing.strokes.allSatisfy { !$0.renderBounds.intersects(centered) })
 assert(store.state.artifacts.dropLast().allSatisfy { !$0.frame.intersects(centered) })
 print("PASS write renders its source centered in view, below anything it would cover")
+assert(store.state.artifacts.last!.adaptive == true && store.state.artifacts.first!.adaptive == nil
+       && store.state.artifacts.first { $0.id == putID }!.adaptive == false)
+let sample = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 1), format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }()).image { context in
+    UIColor(red: 0.11, green: 0.14, blue: 0.19, alpha: 1).setFill(); context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+}
+func rgba(_ image: UIImage, _ x: Int) -> [UInt8] {
+    var px = [UInt8](repeating: 0, count: 8)
+    let ctx = CGContext(data: &px, width: 2, height: 1, bitsPerComponent: 8, bytesPerRow: 8, space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(image.cgImage!, in: CGRect(x: 0, y: 0, width: 2, height: 1))
+    return Array(px[x * 4..<x * 4 + 4])
+}
+let dark = WriteRenderer.darkVariant(sample)!
+let textPixel = rgba(dark, 0), clear = rgba(dark, 1)
+assert(textPixel[3] == 255 && textPixel[0] > 200 && textPixel[1] > 200 && textPixel[2] > 200, "text should turn light: \(textPixel)")
+assert(clear[3] == 0, "transparent stays transparent: \(clear)")
+assert(WriteRenderer.hasTransparentBackground(UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { _ in }))
+assert(!WriteRenderer.hasTransparentBackground(image))
+print("PASS writes are marked adaptive and their dark version keeps transparency")
 let belowID = UUID().uuidString.lowercased()
 _ = try command("write", id: belowID, extra: writeArgs.merging(["width": 300, "below": writeID]) { $1 })
 assert(store.state.artifacts.last!.frame == CGRect(x: 350, y: centered.maxY + 40, width: 300, height: 100))

@@ -9,6 +9,11 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
     private var bridgeTimer: Timer?
     private var artifactViews: [String: UIImageView] = [:]
     private static let ballpointColor = UIColor(red: 0.10, green: 0.17, blue: 0.32, alpha: 1)
+    /// Follows the system appearance; PencilKit adapts ink colors to it on its own.
+    private static let paper = UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1) : UIColor(red: 0.99, green: 0.98, blue: 0.95, alpha: 1) }
+    private var darkImages: [String: UIImage] = [:]
+    private var controlBorders: [UIView] = []
     private static let ballpointWidth: CGFloat = 1.2
     private lazy var toolPicker: PKToolPicker = {
         if #available(iOS 18.0, *) {
@@ -54,7 +59,8 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
     private func makeButton(_ symbol: String, label: String, action: Selector) -> UIButton {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)), for: .normal)
-        button.tintColor = UIColor(red: 0.22, green: 0.36, blue: 0.28, alpha: 1)
+        button.tintColor = UIColor { $0.userInterfaceStyle == .dark
+            ? UIColor(red: 0.62, green: 0.78, blue: 0.68, alpha: 1) : UIColor(red: 0.22, green: 0.36, blue: 0.28, alpha: 1) }
         button.accessibilityLabel = label
         button.addTarget(self, action: action, for: .touchUpInside)
         NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 44), button.heightAnchor.constraint(equalToConstant: 44)])
@@ -62,12 +68,13 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
     }
 
     private func floatingControls(_ buttons: [UIButton]) -> UIView {
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialLight))
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
         blur.translatesAutoresizingMaskIntoConstraints = false
         blur.layer.cornerRadius = 18
         blur.clipsToBounds = true
         blur.layer.borderWidth = 0.5
-        blur.layer.borderColor = UIColor.black.withAlphaComponent(0.08).cgColor
+        blur.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
+        controlBorders.append(blur)
         let stack = UIStackView(arrangedSubviews: buttons)
         stack.translatesAutoresizingMaskIntoConstraints = false
         blur.contentView.addSubview(stack)
@@ -82,7 +89,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let paper = UIColor(red: 0.99, green: 0.98, blue: 0.95, alpha: 1)
+        let paper = Self.paper
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.backgroundColor = paper
         scroll.contentSize = paperSize
@@ -133,6 +140,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
             refreshBoard(resetInk: true)
         } catch { loadError = error }
         canvas.delegate = self
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _: UITraitCollection) in self.appearanceChanged() }
         let dismissTools = UITapGestureRecognizer(target: self, action: #selector(dismissTools))
         dismissTools.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         dismissTools.cancelsTouchesInView = false
@@ -182,7 +190,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
 
     private func addArtifact(_ artifact: CanvasArtifact, image: UIImage, focus: Bool) {
         guard artifactViews[artifact.id] == nil else { return }
-        let imageView = UIImageView(image: image)
+        let imageView = UIImageView(image: displayed(artifact, image))
         imageView.frame = artifact.frame
         imageView.contentMode = .scaleToFill
         imageView.isUserInteractionEnabled = false
@@ -191,6 +199,20 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
         if focus {
             scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -80), animated: true)
         }
+    }
+
+    private func displayed(_ artifact: CanvasArtifact, _ image: UIImage) -> UIImage {
+        guard traitCollection.userInterfaceStyle == .dark,
+              artifact.adaptive ?? WriteRenderer.hasTransparentBackground(image) else { return image }
+        if let cached = darkImages[artifact.imageFile] { return cached }
+        let dark = WriteRenderer.darkVariant(image) ?? image
+        darkImages[artifact.imageFile] = dark
+        return dark
+    }
+
+    private func appearanceChanged() {
+        for view in controlBorders { view.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor }
+        refreshBoard(resetInk: false)
     }
 
     private var visibleRect: CGRect {
@@ -246,9 +268,8 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
         let format = UIGraphicsImageRendererFormat()
         format.scale = min(2, 2400 / max(rect.width, rect.height))
         var image: UIImage!
-        // Offscreen PencilKit rendering uses the current traits, not the window's.
-        // Match the light paper shown on the device, including older black strokes.
-        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+        // Offscreen PencilKit rendering uses the current traits, not the window's; match what the device shows.
+        UITraitCollection(userInterfaceStyle: traitCollection.userInterfaceStyle).performAsCurrent {
             image = UIGraphicsImageRenderer(size: rect.size, format: format).image { context in
                 workspace.backgroundColor?.setFill()
                 context.fill(CGRect(origin: .zero, size: rect.size))

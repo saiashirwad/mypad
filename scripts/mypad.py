@@ -44,7 +44,7 @@ def copy(device, direction, source, destination, check=True):
 
 def make_command(kind):
     return dict(id=str(uuid.uuid4()), kind=kind, title="Reference", x=0, y=0,
-                width=0, height=0, expiresAt=time.time() + 30)
+                width=0, height=0, protocolVersion=1, expiresAt=time.time() + 30)
 
 
 def publish(device, command, folder):
@@ -233,7 +233,11 @@ def run(args):
             finally:
                 stage.unlink(missing_ok=True)
             return result(args.action, receipt, backup=str(output))
-        return result(args.action, receipt, message=receipt["message"])
+        extra = {}
+        if args.action == "put" and receipt.get("reference"):
+            ref = receipt["reference"]
+            extra = dict(referenceId=ref["id"], frame={key: ref[key] for key in ("x", "y", "width", "height")})
+        return result(args.action, receipt, message=receipt["message"], **extra)
 
 
 def main():

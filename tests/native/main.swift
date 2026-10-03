@@ -115,6 +115,7 @@ let upload = "upload-\(putID).png"
 try image.pngData()!.write(to: bridgeRoot.appendingPathComponent("assets/" + upload))
 let placed = try command("image", id: putID, extra: ["imageFile": upload])
 assert(placed["status"] as? String == "ok" && store.state.artifacts.count == 2)
+assert((placed["reference"] as? [String: Any])?["id"] as? String == putID)
 let inserted = store.state.artifacts.last!
 assert(inserted.width == 520 && inserted.height == 520 && inserted.x == 240 && inserted.y == 140)
 _ = try command("image", id: putID, extra: ["imageFile": upload])

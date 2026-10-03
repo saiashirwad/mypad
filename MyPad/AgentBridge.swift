@@ -143,6 +143,7 @@ final class AgentBridge {
         let expiresAt: Double?
         let expectedRevision: Int?
         let restoreFolder: String?
+        let protocolVersion: Int?
     }
     struct Snapshot: Codable {
         let id: String
@@ -164,6 +165,7 @@ final class AgentBridge {
         let imageFile: String?
         let backupFolder: String?
         let revision: Int
+        let reference: CanvasArtifact?
     }
 
     let root: URL
@@ -201,9 +203,13 @@ final class AgentBridge {
                 try? FileManager.default.removeItem(at: url); continue
             }
             do {
+                if let version = command.protocolVersion, version != 1 {
+                    throw BridgeFailure("Unsupported command protocol version")
+                }
                 // Recover a committed mutation if receipt publication was interrupted.
                 if let revision = store.state.appliedCommands[command.id] {
-                    try receipt(command.id, message: "Already applied", revision: revision)
+                    try receipt(command.id, message: "Already applied", revision: revision,
+                                reference: artifacts.first(where: { $0.id == command.id }))
                     try FileManager.default.removeItem(at: url); continue
                 }
                 let exported = (command.kind == "capture" && FileManager.default.fileExists(atPath: root.appendingPathComponent("outbox/snapshot-\(command.id).json").path))
@@ -283,7 +289,7 @@ final class AgentBridge {
                     try store.commit(artifacts: artifacts + [artifact], drawing: store.drawing,
                                      view: view, commandID: command.id)
                     changed(true)
-                    try receipt(command.id, message: "Reference placed")
+                    try receipt(command.id, message: "Reference placed", reference: artifact)
                 default: throw BridgeFailure("Unknown operation")
                 }
                 try FileManager.default.removeItem(at: url)
@@ -375,9 +381,10 @@ final class AgentBridge {
     }
 
     private func receipt(_ id: String, message: String, status: String = "ok", code: String? = nil,
-                         imageFile: String? = nil, backupFolder: String? = nil, revision: Int? = nil) throws {
+                         imageFile: String? = nil, backupFolder: String? = nil, revision: Int? = nil,
+                         reference: CanvasArtifact? = nil) throws {
         let value = Receipt(id: id, status: status, message: message, code: code,
-            imageFile: imageFile, backupFolder: backupFolder, revision: revision ?? store.state.revision)
+            imageFile: imageFile, backupFolder: backupFolder, revision: revision ?? store.state.revision, reference: reference)
         try encoder.encode(value).write(to: root.appendingPathComponent("outbox/ack-\(id).json"), options: .atomic)
     }
 }

@@ -129,7 +129,8 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
             self.store = store
             let bridge = try AgentBridge(store: store)
             self.bridge = bridge
-            refreshBoard(focus: false)
+            WriteRenderer.hostView = view
+            refreshBoard(resetInk: true)
         } catch { loadError = error }
         canvas.delegate = self
         let dismissTools = UITapGestureRecognizer(target: self, action: #selector(dismissTools))
@@ -155,7 +156,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
             guard let self else { return }
             guard !self.drawingActive else { return }
             self.bridge?.poll(view: self.boardView, visibleRect: self.visibleRect,
-                changed: { self.refreshBoard(focus: $0) }, render: { try self.renderBoard(rect: $0) })
+                changed: { self.refreshBoard(resetInk: $0, focus: $1) }, render: { try self.renderBoard(rect: $0) })
         }
         if let error = loadError {
             loadError = nil
@@ -205,10 +206,11 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
                   zoomScale: scroll.zoomScale)
     }
 
-    private func refreshBoard(focus: Bool) {
+    /// Redraws references; clear/restore also reset the ink. A new placement off screen is brought into view.
+    private func refreshBoard(resetInk: Bool, focus: CGRect? = nil) {
         guard let store else { return }
         applyingBoard = true
-        if !focus {
+        if resetInk {
             canvas.drawing = store.drawing
             canvas.undoManager?.removeAllActions()
         }
@@ -217,9 +219,16 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
         for artifact in store.state.artifacts {
             if let image = store.image(for: artifact) { addArtifact(artifact, image: image, focus: false) }
         }
-        if focus, let artifact = store.state.artifacts.last {
-            scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -40), animated: false)
-        } else { applyView(store.state.view) }
+        if let focus {
+            // Pan to it at the current zoom, zooming out only if it doesn't fit; never zoom in.
+            if !visibleRect.contains(focus) {
+                let padded = focus.insetBy(dx: -40, dy: -40)
+                let zoom = min(scroll.zoomScale, scroll.bounds.width / padded.width, scroll.bounds.height / padded.height)
+                let size = CGSize(width: scroll.bounds.width / zoom, height: scroll.bounds.height / zoom)
+                scroll.zoom(to: CGRect(x: focus.midX - size.width / 2, y: focus.midY - size.height / 2,
+                                       width: size.width, height: size.height), animated: true)
+            }
+        } else if resetInk { applyView(store.state.view) }
         applyingBoard = false
         updateUndoButtons()
     }
@@ -263,10 +272,6 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGest
     }
 
     @objc private func resetView() {
-        if let artifact = bridge?.artifacts.last {
-            scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -80), animated: false)
-            return
-        }
         scroll.setZoomScale(1, animated: false)
         let drawingBounds = canvas.drawing.bounds
         let center = drawingBounds.isNull

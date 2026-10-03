@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Place PNG references, capture the current iPad view, and back up editable boards."""
+"""Write Markdown/HTML/SVG or place PNGs on the iPad, capture the current view, and back up editable boards."""
 import argparse
 import json
 import math
@@ -21,8 +21,9 @@ LIMIT = 512 * 1024 * 1024
 
 
 class Failure(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, **extra):
         self.code = code
+        self.extra = extra
         super().__init__(message)
 
 
@@ -60,7 +61,9 @@ def publish(device, command, folder):
             if receipt.get("id") != command["id"]:
                 raise Failure("invalid_receipt", "Received an unrelated command receipt")
             if receipt["status"] != "ok":
-                raise Failure(receipt.get("code", "app_error"), receipt["message"])
+                if receipt["message"] == "Unsupported command protocol version":
+                    raise Failure("app_outdated", "MyPad on the iPad is older than this CLI; rebuild it with scripts/run-ipad.sh")
+                raise Failure(receipt.get("code", "app_error"), receipt["message"], revision=receipt.get("revision"))
             return receipt
         time.sleep(0.3)
     raise Failure("unknown_outcome", f"No acknowledgement. Keep MyPad open and the iPad unlocked. "
@@ -141,7 +144,10 @@ def unpack(archive, folder):
 
 
 def result(operation, receipt, **extra):
-    return dict(ok=True, operation=operation, commandId=receipt["id"], revision=receipt["revision"], **extra)
+    return dict(ok=True, revision=receipt["revision"], **extra)
+
+
+FORMATS = {".md": "md", ".markdown": "md", ".html": "html", ".htm": "html", ".svg": "svg"}
 
 
 def run(args):
@@ -168,10 +174,32 @@ def run(args):
             if receipt.get("id") != identifier:
                 raise Failure("invalid_receipt", "Command receipt identity mismatch")
             return dict(ok=True, operation="status", commandId=identifier, receipt=receipt)
+        if args.action in ("put", "write", "remove") and getattr(args, "replace", None) or args.action == "remove":
+            command.update(protocolVersion=2, target=str(uuid.UUID(args.replace if args.action != "remove" else args.id)))
+        if args.action == "write":
+            if args.file in (None, "-"):
+                text, fmt = sys.stdin.read(), "md"
+            else:
+                path = Path(args.file).expanduser().resolve()
+                text, fmt = path.read_text(), FORMATS.get(path.suffix.lower(), "md")
+            fmt = args.format or fmt
+            data = text.encode()
+            if not data.strip() or len(data) > 1024 * 1024:
+                raise Failure("invalid_input", "Write needs 1 byte to 1 MB of UTF-8 text")
+            if sum(v is not None for v in (args.x, args.below, args.right_of)) > 1 or (args.x is None) != (args.y is None):
+                raise Failure("invalid_input", "Use one of --x/--y (together), --below or --right-of")
+            command.update(kind="write", protocolVersion=2, format=fmt, sourceFile=f"write-{command['id']}.{fmt}",
+                           title=args.title or "Reference", width=args.width or 0,
+                           below=args.below, rightOf=args.right_of, positioned=args.x is not None,
+                           x=args.x or 0, y=args.y or 0)
+            staged = folder / command["sourceFile"]
+            staged.write_bytes(data)
+            copy(device, "to", staged, f"{REMOTE}/assets/{command['sourceFile']}")
         if args.action == "put":
             source = args.file.expanduser().resolve()
             w, h = png_size(source)
-            command.update(kind="image", title=args.title or source.stem, imageFile=f"upload-{command['id']}.png")
+            command.update(kind="image", title=args.title or (source.stem if not args.replace else "Reference"),
+                           imageFile=f"upload-{command['id']}.png")
             if any(v is not None for v in (args.x, args.y, args.width, args.height)):
                 width = args.width if args.width is not None else (args.height * w / h if args.height is not None else min(w, 1100))
                 height = args.height if args.height is not None else width * h / w
@@ -182,6 +210,14 @@ def run(args):
             copy(device, "to", source, f"{REMOTE}/assets/{command['imageFile']}")
         elif args.action in ("clear", "restore"):
             command["expectedRevision"] = args.if_revision
+        if args.action == "clear" and args.backup:
+            # Back up first, then clear at exactly the revision that backup saved.
+            saved = run(argparse.Namespace(action="backup", device=device, output=args.backup))
+            if args.if_revision is not None and args.if_revision != saved["revision"]:
+                raise Failure("revision_conflict", "Board changed; nothing was cleared", backup=saved["backup"], revision=saved["revision"])
+            command["expectedRevision"] = saved["revision"]
+        elif args.action == "clear" and args.if_revision is None:
+            raise Failure("invalid_input", "clear needs --if-revision or --backup")
         if args.action == "restore":
             _, files = unpack(args.file.expanduser().resolve(), folder)
             command["restoreFolder"] = command["id"]
@@ -199,10 +235,10 @@ def run(args):
             snapshot = json.loads((folder / name).read_text())
             if snapshot["id"] != command["id"] or snapshot["imageFile"] != f"snapshot-{command['id']}.png" or snapshot["inkFile"] != f"ink-{command['id']}.drawing":
                 raise Failure("invalid_capture", "Capture identity mismatch")
-            for key in ("imageFile", "inkFile"):
-                copy(device, "from", f"{REMOTE}/outbox/{snapshot[key]}", output / snapshot[key])
+            copy(device, "from", f"{REMOTE}/outbox/{snapshot['imageFile']}", output / snapshot["imageFile"])
             (output / name).write_text(json.dumps(snapshot, indent=2))
-            return result(args.action, receipt, image=str(output / snapshot["imageFile"]), metadata=str(output / name), snapshot=snapshot)
+            return result(args.action, receipt, image=str(output / snapshot["imageFile"]),
+                          ids=snapshot["artifactIDs"], strokes=snapshot["strokeCount"])
         if args.action == "backup":
             name = f"backup-{command['id']}"
             if receipt.get("backupFolder") != name:
@@ -234,10 +270,10 @@ def run(args):
                 stage.unlink(missing_ok=True)
             return result(args.action, receipt, backup=str(output))
         extra = {}
-        if args.action == "put" and receipt.get("reference"):
+        if receipt.get("reference"):
             ref = receipt["reference"]
-            extra = dict(referenceId=ref["id"], frame={key: ref[key] for key in ("x", "y", "width", "height")})
-        return result(args.action, receipt, message=receipt["message"], **extra)
+            extra = dict(id=ref["id"], frame=[round(ref[key]) for key in ("x", "y", "width", "height")])
+        return result(args.action, receipt, **extra)
 
 
 def main():
@@ -251,22 +287,37 @@ def main():
     put = sub.add_parser("put")
     put.add_argument("file", type=Path)
     put.add_argument("--title")
+    put.add_argument("--replace", metavar="ID", help="Swap this reference's image, keeping its id and position")
     for key in ("x", "y", "width", "height"):
         put.add_argument("--"+key, type=float)
+    write = sub.add_parser("write", help="Render Markdown (default), HTML or SVG on the iPad")
+    write.add_argument("file", nargs="?", help="Source file; omit or '-' for stdin")
+    write.add_argument("--format", choices=("md", "html", "svg"))
+    write.add_argument("--width", type=float, help="Width in board points (default 640, or the replaced one's)")
+    write.add_argument("--x", type=float)
+    write.add_argument("--y", type=float)
+    write.add_argument("--below", metavar="ID")
+    write.add_argument("--right-of", metavar="ID")
+    write.add_argument("--replace", metavar="ID")
+    write.add_argument("--title")
+    remove = sub.add_parser("remove")
+    remove.add_argument("id")
     capture = sub.add_parser("capture")
     capture.add_argument("--output", type=Path)
     backup = sub.add_parser("backup")
     backup.add_argument("--output", type=Path, required=True)
     clear = sub.add_parser("clear")
-    clear.add_argument("--if-revision", type=int, required=True)
+    clear.add_argument("--if-revision", type=int)
+    clear.add_argument("--backup", type=Path, help="Back up to this new path first, then clear at its revision")
     restore = sub.add_parser("restore")
     restore.add_argument("file", type=Path)
     restore.add_argument("--if-revision", type=int, required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(run(args), indent=2, allow_nan=False))
+        print(json.dumps(run(args), allow_nan=False))
     except (Failure, OSError, ValueError, KeyError, TypeError, RuntimeError, zipfile.BadZipFile) as error:
-        print(json.dumps(dict(ok=False, code=getattr(error, "code", "invalid_input"), message=str(error))), file=sys.stderr)
+        extra = {k: v for k, v in getattr(error, "extra", {}).items() if v is not None}
+        print(json.dumps(dict(ok=False, code=getattr(error, "code", "invalid_input"), message=str(error), **extra)), file=sys.stderr)
         return 1
     return 0
 

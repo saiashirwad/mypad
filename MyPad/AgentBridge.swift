@@ -144,6 +144,13 @@ final class AgentBridge {
         let expectedRevision: Int?
         let restoreFolder: String?
         let protocolVersion: Int?
+        // v2: `write` source and format, `remove`/replace target, write placement.
+        let sourceFile: String?
+        let format: String?
+        let target: String?
+        let below: String?
+        let rightOf: String?
+        let positioned: Bool?
     }
     struct Snapshot: Codable {
         let id: String
@@ -170,6 +177,10 @@ final class AgentBridge {
 
     let root: URL
     let store: DrawingStore
+    /// Write renders finish asynchronously; the command stays in the inbox until its outcome is here.
+    private var rendering: Set<String> = []
+    private var renders: [String: Result<(png: Data, height: CGFloat, width: CGFloat), Error>] = [:]
+    var renderer: (String, String, CGFloat, @escaping (Result<(png: Data, height: CGFloat), Error>) -> Void) -> Void = WriteRenderer.render
     var artifacts: [CanvasArtifact] { store.state.artifacts }
     private let encoder: JSONEncoder = {
         let value = JSONEncoder(); value.outputFormatting = [.prettyPrinted, .sortedKeys]; return value
@@ -186,7 +197,8 @@ final class AgentBridge {
 
     func image(for artifact: CanvasArtifact) -> UIImage? { store.image(for: artifact) }
 
-    func poll(view: BoardView, visibleRect: CGRect, changed: (Bool) -> Void,
+    /// `changed(resetInk, focus)`: clear/restore reset the ink; a new placement may need bringing into view.
+    func poll(view: BoardView, visibleRect: CGRect, changed: (Bool, CGRect?) -> Void,
               render: (CGRect) throws -> UIImage) {
         store.updateView(view)
         let inbox = root.appendingPathComponent("inbox")
@@ -203,7 +215,7 @@ final class AgentBridge {
                 try? FileManager.default.removeItem(at: url); continue
             }
             do {
-                if let version = command.protocolVersion, version != 1 {
+                if let version = command.protocolVersion, !(1...2).contains(version) {
                     throw BridgeFailure("Unsupported command protocol version")
                 }
                 // Recover a committed mutation if receipt publication was interrupted.
@@ -247,12 +259,33 @@ final class AgentBridge {
                     try receipt(command.id, message: "Full board staged", backupFolder: name, revision: manifest.revision)
                 case "clear":
                     try store.commit(artifacts: [], drawing: PKDrawing(), view: BoardView(), commandID: command.id)
-                    changed(false)
+                    changed(true, nil)
                     try receipt(command.id, message: "Board cleared")
                 case "restore":
                     try restore(command)
-                    changed(false)
+                    changed(true, nil)
                     try receipt(command.id, message: "Board restored")
+                case "remove":
+                    guard let id = command.target, let old = artifacts.first(where: { $0.id == id }) else {
+                        throw BridgeFailure("No reference with that id is on the board", code: "unknown_reference")
+                    }
+                    try store.commit(artifacts: artifacts.filter { $0.id != id }, drawing: store.drawing, view: view, commandID: command.id)
+                    try? FileManager.default.removeItem(at: store.root.appendingPathComponent("assets/" + old.imageFile))
+                    changed(false, nil)
+                    try receipt(command.id, message: "Reference removed")
+                case "write":
+                    guard let rendered = try renderedWrite(command) else { return }
+                    try place(command, png: rendered.png, size: CGSize(width: rendered.width, height: rendered.height),
+                              visibleRect: visibleRect, view: view, changed: changed)
+                case "image" where command.target != nil:
+                    let data = try uploadedImage(command)
+                    guard let old = artifacts.first(where: { $0.id == command.target }) else {
+                        throw BridgeFailure("No reference with that id is on the board", code: "unknown_reference")
+                    }
+                    let pixels = UIImage(data: data)!.size
+                    let width = command.width > 0 ? command.width : old.width
+                    try place(command, png: data, size: CGSize(width: width, height: width * pixels.height / pixels.width),
+                              visibleRect: visibleRect, view: view, changed: changed)
                 case "image", "scene":
                     guard artifacts.count < 64 else { throw BridgeFailure("Board reference limit reached") }
                     let image: UIImage
@@ -288,7 +321,7 @@ final class AgentBridge {
                         x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
                     try store.commit(artifacts: artifacts + [artifact], drawing: store.drawing,
                                      view: view, commandID: command.id)
-                    changed(true)
+                    changed(false, artifact.frame)
                     try receipt(command.id, message: "Reference placed", reference: artifact)
                 default: throw BridgeFailure("Unknown operation")
                 }
@@ -303,6 +336,93 @@ final class AgentBridge {
                 } catch { /* Retry publication on the next poll. */ }
             }
         }
+    }
+
+    private func uploadedImage(_ command: Command) throws -> Data {
+        guard let file = command.imageFile, file == (file as NSString).lastPathComponent else { throw BridgeFailure("Missing image") }
+        let data = try Data(contentsOf: root.appendingPathComponent("assets/" + file))
+        guard data.count <= 100 * 1024 * 1024, let image = UIImage(data: data),
+              image.size.width * image.size.height * image.scale * image.scale <= 20_000_000
+        else { throw BridgeFailure("Invalid or oversized image") }
+        return data
+    }
+
+    /// The finished render for a write, nil while it is still rendering. A replace keeps the old width unless one is given.
+    private func renderedWrite(_ command: Command) throws -> (png: Data, height: CGFloat, width: CGFloat)? {
+        if let outcome = renders.removeValue(forKey: command.id) { return try outcome.get() }
+        if rendering.contains(command.id) { return nil }
+        guard let file = command.sourceFile, file == (file as NSString).lastPathComponent,
+              let format = command.format, ["md", "html", "svg"].contains(format) else { throw BridgeFailure("Missing write source") }
+        let data = try Data(contentsOf: root.appendingPathComponent("assets/" + file))
+        guard data.count <= 1024 * 1024, let source = String(data: data, encoding: .utf8) else { throw BridgeFailure("Write source must be UTF-8, at most 1 MB") }
+        var width = command.width
+        if width <= 0, let target = command.target {
+            guard let old = artifacts.first(where: { $0.id == target }) else {
+                throw BridgeFailure("No reference with that id is on the board", code: "unknown_reference")
+            }
+            width = old.width
+        }
+        if width <= 0 { width = 640 }
+        guard (40...3000).contains(width) else { throw BridgeFailure("Write width must be 40-3000 points") }
+        rendering.insert(command.id)
+        let id = command.id
+        renderer(source, format, width) { [weak self] result in
+            self?.rendering.remove(id)
+            self?.renders[id] = result.map { (png: $0.png, height: $0.height, width: width) }
+        }
+        return nil
+    }
+
+    /// Places a write or replaces a reference. Replace keeps the id and origin; a write goes where asked or centered in view.
+    private func place(_ command: Command, png: Data, size: CGSize, visibleRect: CGRect, view: BoardView,
+                       changed: (Bool, CGRect?) -> Void) throws {
+        let old = try command.target.map { id in
+            guard let old = artifacts.first(where: { $0.id == id }) else {
+                throw BridgeFailure("No reference with that id is on the board", code: "unknown_reference")
+            }
+            return old
+        }
+        if old == nil { guard artifacts.count < 64 else { throw BridgeFailure("Board reference limit reached") } }
+        func anchor(_ id: String) throws -> CGRect {
+            guard let frame = artifacts.first(where: { $0.id == id })?.frame else {
+                throw BridgeFailure("No reference with that id is on the board", code: "unknown_reference")
+            }
+            return frame
+        }
+        var origin: CGPoint
+        if let old { origin = old.frame.origin }
+        else if let id = command.below { let a = try anchor(id); origin = CGPoint(x: a.minX, y: a.maxY + 40) }
+        else if let id = command.rightOf { let a = try anchor(id); origin = CGPoint(x: a.maxX + 40, y: a.minY) }
+        else if command.positioned == true { origin = CGPoint(x: command.x, y: command.y) }
+        else { origin = freeSpot(size: size, in: visibleRect, ignoring: old?.id) }
+        // Nudge onto the board rather than fail when only the position overflows.
+        origin.x = max(0, min(3000 - size.width, origin.x))
+        origin.y = max(0, min(3000 - size.height, origin.y))
+        let frame = CGRect(origin: origin, size: size)
+        try validateFrame(frame)
+        let file = "\(command.id).png"
+        try png.write(to: store.root.appendingPathComponent("assets/" + file), options: .atomic)
+        let title = command.title == "Reference" ? (old?.title ?? command.title) : command.title
+        let artifact = CanvasArtifact(id: old?.id ?? command.id, title: title, imageFile: file,
+            x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+        var next = artifacts
+        if let old, let index = next.firstIndex(where: { $0.id == old.id }) { next[index] = artifact } else { next.append(artifact) }
+        try store.commit(artifacts: next, drawing: store.drawing, view: view, commandID: command.id)
+        if let old { try? FileManager.default.removeItem(at: store.root.appendingPathComponent("assets/" + old.imageFile)) }
+        changed(false, old == nil ? frame : nil)
+        try receipt(command.id, message: old == nil ? "Reference placed" : "Reference replaced", reference: artifact)
+    }
+
+    /// Centered in view unless that covers ink or another reference; then just below whatever it would cover.
+    private func freeSpot(size: CGSize, in view: CGRect, ignoring id: String?) -> CGPoint {
+        let taken = store.drawing.strokes.map(\.renderBounds) + artifacts.filter { $0.id != id }.map(\.frame)
+        var frame = CGRect(x: view.midX - size.width / 2, y: view.midY - size.height / 2, width: size.width, height: size.height)
+        for _ in 0..<50 {
+            let hits = taken.filter { $0.intersects(frame.insetBy(dx: -24, dy: -24)) }
+            guard let bottom = hits.map(\.maxY).max() else { break }
+            frame.origin.y = bottom + 24
+        }
+        return frame.origin
     }
 
     private func validateFrame(_ frame: CGRect) throws {

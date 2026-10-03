@@ -1,24 +1,40 @@
 ---
 name: mypad
-description: Use the user's iPad canvas to place visual references, inspect Pencil drawings or annotations, clear the board, and back up or restore editable work. Use when asked to look at the iPad, draw something on it, or work from its visual feedback.
+description: Read and write the user's iPad canvas - write Markdown/SVG/HTML onto it, place PNGs, inspect Pencil drawings or annotations, clear, back up or restore. Use when asked to look at the iPad, put or draw something on it, or work from its visual feedback.
 ---
 
-Use the globally installed `mypad` command from any repository. MyPad must be open and the iPad unlocked. Run `mypad --help` for command syntax.
+Use the global `mypad` command from any directory. MyPad must be open and the iPad unlocked. Output is one line of JSON.
 
-## Read the iPad
+## Read
 
-Run `mypad capture --output <workspace-local-directory>`, then open the returned `image` path with your image-reading tool. Capture is the current view, so the user's pan/zoom selects the relevant context. Complete the read only after inspecting the image pixels. If capture fails, report the error and ask the user to open/unlock the app or reconnect the device; a previous image does not establish current state.
+`mypad capture` → `{"ok":true,"revision":N,"image":PATH,"ids":[...],"strokes":K}`. Open `image` with your image-reading tool; a path alone is not a read. Capture shows the user's current view (their pan/zoom picks the context). Captures go to the default exports folder; don't pass `--output` into a project tree.
 
-## Place a reference
+## Write
 
-Generate a PNG on the Mac and run `mypad put <absolute-png-path> --title <short-title>`. Diagram sources can remain in the project. Default placement fits the current view; explicit geometry is available. Read the acknowledgement to confirm placement.
+Pipe text straight to the iPad; it renders there. No diagram files or Mac-side rendering.
+
+```sh
+mypad write <<'MD'
+## Title
+- Markdown (default): lists, `code`, tables, fenced blocks
+MD
+mypad write --format svg <<'SVG'
+<svg width="400" height="200"><rect x="10" y="10" width="160" height="60" rx="10" fill="none" stroke="#2457c5" stroke-width="3"/></svg>
+SVG
+```
+
+- Returns `{"ok":true,"revision":N,"id":ID,"frame":[x,y,w,h]}` (board points). Keep `id`.
+- Everything renders straight onto the board as plain text/drawing, no box. `--width` (default 640 points) is the wrap width.
+- Placement: centered in the user's current view, moved down past any ink or item it would cover; `--below ID` / `--right-of ID` to stack pieces; `--x X --y Y` for exact.
+- Change something in place, keeping the user's ink: `mypad write --replace ID` (or `mypad put file.png --replace ID`). Delete one item: `mypad remove ID`.
+- Prefer several small writes over one huge one. Use `mypad put /abs/file.png` only for an existing image.
 
 ## Start afresh
 
-Capture first to obtain the current revision. Preserve work with `mypad backup --output <new-path>.mypad` when requested or appropriate before replacing work. Run `mypad clear --if-revision <current-revision>` only when starting afresh is intended, then place new content. Backup and clear are separate operations.
+`mypad clear --backup <new-path>.mypad` backs up and clears in one step. Only clear when starting afresh is intended.
 
 ## Restore
 
-Back up the current board before restoring another one. Use `mypad status` for its current revision, then `mypad restore <backup-path>.mypad --if-revision <revision>`. Restore replaces the whole board and recovers editable handwriting and saved framing.
+Back up first, then `mypad restore <backup>.mypad --if-revision <revision from your latest command>`. Restore replaces the whole board.
 
-On a revision conflict, capture again and account for the newer work. On an unknown-outcome timeout, use `mypad status --command-id <id-from-error>` to reconcile its receipt, then capture current state before another mutation. The command may already have applied. Report successful paths and revisions without claiming an unacknowledged operation completed.
+On `revision_conflict` the user drew something since; capture again and account for it. On `unknown_outcome`, run `mypad status --command-id <id-from-error>`; the command may already have applied.

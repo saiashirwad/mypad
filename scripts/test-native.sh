@@ -19,6 +19,6 @@ MYPAD_SDK="$(xcrun --sdk macosx --show-sdk-path)"
 MYPAD_ARCH="$(uname -m)"
 xcrun swiftc -target "$MYPAD_ARCH-apple-ios17.0-macabi" -sdk "$MYPAD_SDK" \
   -F "$MYPAD_SDK/System/iOSSupport/System/Library/Frameworks" \
-  MyPad/DrawingStore.swift MyPad/AgentBridge.swift tests/native/main.swift \
+  MyPad/DrawingStore.swift MyPad/AgentBridge.swift MyPad/WriteRenderer.swift tests/native/main.swift \
   -o "$MYPAD_BUNDLE/Contents/MacOS/MyPadNativeTests"
 "$MYPAD_BUNDLE/Contents/MacOS/MyPadNativeTests" "$@"

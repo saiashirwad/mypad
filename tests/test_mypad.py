@@ -116,3 +116,68 @@ class BackupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommandTests(unittest.TestCase):
+    """Command construction with the device transport mocked out."""
+
+    def setUp(self):
+        self.sent = []
+        self.copied = []
+        patches = [patch.object(mypad, "copy", side_effect=lambda d, direction, source, dest, check=True: self.copied.append((direction, source, dest)) or True),
+                   patch.object(mypad, "publish", side_effect=self.publish)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def publish(self, device, command, folder):
+        self.sent.append(dict(command))
+        return dict(id=command["id"], status="ok", message="ok", revision=7,
+                    reference=dict(id=command.get("target") or command["id"], x=1, y=2, width=640, height=100))
+
+    def run_cli(self, *argv, stdin=""):
+        with patch("sys.argv", ["mypad", "--device", "dev", *argv]), patch("sys.stdin.read", return_value=stdin), \
+             patch("builtins.print") as printed:
+            code = mypad.main()
+        return code, json.loads(printed.call_args.args[0])
+
+    def test_write_from_stdin_defaults_to_markdown_and_terse_output(self):
+        code, out = self.run_cli("write", "--below", str(uuid.uuid4()), stdin="# hi")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, dict(ok=True, revision=7, id=self.sent[0]["id"], frame=[1, 2, 640, 100]))
+        command = self.sent[0]
+        self.assertEqual((command["kind"], command["format"], command["protocolVersion"], command["positioned"]), ("write", "md", 2, False))
+        self.assertTrue(self.copied[0][2].endswith(command["sourceFile"]))
+
+    def test_write_infers_format_and_rejects_conflicting_placement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "shape.svg"
+            source.write_text("<svg/>")
+            self.run_cli("write", str(source), "--x", "10", "--y", "20")
+            self.assertEqual((self.sent[0]["format"], self.sent[0]["positioned"], self.sent[0]["x"]), ("svg", True, 10))
+            code, out = self.run_cli("write", str(source), "--x", "10", "--y", "20", "--below", str(uuid.uuid4()))
+            self.assertEqual((code, out["code"]), (1, "invalid_input"))
+
+    def test_replace_and_remove_target_a_reference(self):
+        target = str(uuid.uuid4())
+        self.run_cli("write", "--replace", target, stdin="new text")
+        self.run_cli("remove", target)
+        self.assertEqual([(c["kind"], c["target"], c["protocolVersion"]) for c in self.sent],
+                         [("write", target, 2), ("remove", target, 2)])
+
+    def test_clear_needs_a_revision_or_backup(self):
+        code, out = self.run_cli("clear")
+        self.assertEqual((code, out["code"], self.sent), (1, "invalid_input", []))
+
+    def test_clear_backup_clears_at_the_backed_up_revision(self):
+        real_run = mypad.run
+        def fake_run(args):
+            if args.action == "backup":
+                return dict(ok=True, revision=41, backup=str(args.output))
+            return real_run(args)
+        with patch.object(mypad, "run", side_effect=fake_run):
+            code, out = self.run_cli("clear", "--backup", "/tmp/new.mypad")
+        self.assertEqual((code, self.sent[0]["kind"], self.sent[0]["expectedRevision"]), (0, "clear", 41))
+        with patch.object(mypad, "run", side_effect=fake_run):
+            code, out = self.run_cli("clear", "--backup", "/tmp/new.mypad", "--if-revision", "40")
+        self.assertEqual((code, out["code"], out["backup"]), (1, "revision_conflict", "/tmp/new.mypad"))

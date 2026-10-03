@@ -8,7 +8,7 @@ Canonical planning map: [Make the iPad a daily canvas for coding agents](https:/
 
 The iPad sits beside the Mac. From any repository, the user asks a coding agent to put a wireframe, diagram, or other visual reference on the iPad. They annotate it with Pencil, or draw from scratch on a blank board. Saying “look at my iPad” lets the agent capture and inspect the current view inside the existing conversation. The agent can back up the board, clear it, and place a new reference.
 
-One board. No project switching, accounts, chat UI, automatic agent wake-up, or diagram-node editor. No MCP in v1. Item-specific replacement, reference movement, semantic instruction cleanup, and live stroke streaming are deferred.
+One board. No project switching, accounts, chat UI, automatic agent wake-up, or diagram-node editor. No MCP in v1. Reference movement, semantic instruction cleanup, and live stroke streaming are deferred.
 
 The existing 3,000 × 3,000-point workspace is sufficient for v1. Pan/zoom frames what the agent sees. Multiple images may exist on this one surface, but there is no board library. Clear removes all references and ink, resets the view, and commits an empty board. Backup is a separate primitive.
 
@@ -28,7 +28,7 @@ Do not show a green connectivity dot based merely on “the app opened” or an 
 
 ## Three representations
 
-1. **Reference:** PNG, with its original pixels retained and a frame in board coordinates. Agents render SVG, Mermaid, HTML, or other diagram sources on the Mac before placement. Source files can stay in their originating project. No new on-iPad SVG renderer, Excalidraw scene runtime, or tldraw scene runtime is required.
+1. **Reference:** PNG, with its original pixels retained and a frame in board coordinates. Agents either upload a PNG or send Markdown, HTML or SVG text that the iPad renders once with WebKit (`WriteRenderer`, bundled `marked.min.js`) into a PNG reference, so no Mac-side renderer is needed. Rendered references are static images; there is no live web content, Excalidraw or tldraw runtime.
 2. **Capture:** a fresh composite PNG of the current view plus metadata. It contains references and ink, excluding tool UI and system chrome. The agent must open the returned image using its image-reading tool.
 3. **Backup:** a versioned, self-contained ZIP archive with extension `.mypad`. It restores the full board with native editable ink. A preview is for browsing, not the source used to restore.
 
@@ -95,7 +95,9 @@ mypad restore ./architecture.mypad --if-revision <current-revision>
 | --- | --- |
 | `configure` | Save the selected device once in user-level config; no repository changes. |
 | `status` | Request a fresh app acknowledgement; distinguish transport reachable from app responsive. |
-| `put` | Validate and place a PNG, acknowledge after durable insertion, and return reference ID, frame, and board revision. |
+| `put` | Validate and place a PNG (or swap one with `--replace`), acknowledge after durable insertion, and return reference ID, frame, and board revision. |
+| `write` | Render Markdown/HTML/SVG on the iPad into a PNG reference (or re-render one with `--replace`); same acknowledgement as `put`. Protocol version 2. |
+| `remove` | Delete one reference; ink is untouched. Protocol version 2. |
 | `capture` | Capture current view now; return this command's image, metadata, and board revision. Never fall back to the previous capture. |
 | `backup` | Save the full current board to the requested Mac `.mypad` path; return path and captured revision. |
 | `clear` | Empty the board and reset framing. Requires a matching current board revision; backup remains separate. |
@@ -126,7 +128,7 @@ One-time setup: build/install the native app, pair the iPad with Xcode, configur
 The agent instructions explain:
 
 - Run `mypad capture` when asked to look at the iPad, then open the returned PNG in the ongoing conversation. A file path alone does not put pixels into model context.
-- Render generated visuals to PNG on the Mac and use `put`. Start afresh through explicit `clear`; do not infer a clear from a placement request.
+- Send text with `write`; use `put` for existing PNGs. Start afresh through explicit `clear`; do not infer a clear from a placement request.
 - Use `backup` when preserving work, and before restoring a different board. Retain the archive path in the conversation.
 - Use the latest returned revision for clear/restore. On conflict, capture again and explain the newer work rather than clearing blindly.
 - If the app/device is unavailable, report the error with a short action the user can take. Never use an old export as “what is on the iPad now.”

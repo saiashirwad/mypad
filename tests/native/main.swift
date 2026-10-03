@@ -55,8 +55,12 @@ func command(_ kind: String, id: String = UUID().uuidString.lowercased(), revisi
     if let revision { value["expectedRevision"] = revision }
     if let restoreFolder { value["restoreFolder"] = restoreFolder }
     try JSONSerialization.data(withJSONObject: value).write(to: bridgeRoot.appendingPathComponent("inbox/\(id).json"))
-    bridge.poll(view: BoardView(), visibleRect: CGRect(x: 100, y: 100, width: 800, height: 600), changed: { _ in }, render: { _ in image })
-    let data = try Data(contentsOf: bridgeRoot.appendingPathComponent("outbox/ack-\(id).json"))
+    let ack = bridgeRoot.appendingPathComponent("outbox/ack-\(id).json")
+    // A write finishes on the poll after its render completes; a replayed command leaves its inbox file for one more poll.
+    for _ in 0..<4 where !FileManager.default.fileExists(atPath: ack.path) {
+        bridge.poll(view: BoardView(), visibleRect: CGRect(x: 100, y: 100, width: 800, height: 600), changed: { _, _ in }, render: { _ in image })
+    }
+    let data = try Data(contentsOf: ack)
     return try JSONSerialization.jsonObject(with: data) as! [String: Any]
 }
 let capture = try command("capture")
@@ -124,6 +128,50 @@ print("PASS default image placement fits the view and replay does not duplicate 
 let invalidImage = try command("image", extra: ["imageFile": "../outside.png"])
 assert(invalidImage["status"] as? String == "error" && store.state.artifacts.count == 2)
 print("PASS invalid image paths leave references unchanged")
+
+let strokesBefore = store.drawing.strokes.count
+bridge.renderer = { _, _, width, done in
+    let png = UIGraphicsImageRenderer(size: CGSize(width: width * 2, height: 200)).image { context in
+        UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: width * 2, height: 200))
+    }.pngData()!
+    done(.success((png: png, height: 100)))
+}
+let source = "write-source.md"
+try Data("# hi".utf8).write(to: bridgeRoot.appendingPathComponent("assets/" + source))
+let writeArgs: [String: Any] = ["sourceFile": source, "format": "md", "protocolVersion": 2]
+let writeID = UUID().uuidString.lowercased()
+let written = try command("write", id: writeID, extra: writeArgs.merging(["width": 300]) { $1 })
+assert(written["status"] as? String == "ok" && store.state.artifacts.count == 3)
+let centered = store.state.artifacts.last!.frame
+assert(centered.width == 300 && centered.height == 100 && centered.minX == 350)
+assert(store.drawing.strokes.allSatisfy { !$0.renderBounds.intersects(centered) })
+assert(store.state.artifacts.dropLast().allSatisfy { !$0.frame.intersects(centered) })
+print("PASS write renders its source centered in view, below anything it would cover")
+let belowID = UUID().uuidString.lowercased()
+_ = try command("write", id: belowID, extra: writeArgs.merging(["width": 300, "below": writeID]) { $1 })
+assert(store.state.artifacts.last!.frame == CGRect(x: 350, y: centered.maxY + 40, width: 300, height: 100))
+print("PASS write --below places it under its anchor")
+let rewritten = try command("write", extra: writeArgs.merging(["target": writeID]) { $1 })
+assert(rewritten["message"] as? String == "Reference replaced" && store.state.artifacts.count == 4)
+assert(store.state.artifacts.first { $0.id == writeID }!.frame == centered)
+print("PASS write --replace keeps the id, origin and width")
+let upload2 = "upload-replacement.png"
+try UIGraphicsImageRenderer(size: CGSize(width: 200, height: 100)).image { _ in }.pngData()!
+    .write(to: bridgeRoot.appendingPathComponent("assets/" + upload2))
+let oldFile = store.state.artifacts.first { $0.id == putID }!.imageFile
+_ = try command("image", extra: ["imageFile": upload2, "target": putID, "protocolVersion": 2])
+let swapped = store.state.artifacts.first { $0.id == putID }!
+assert(swapped.width == 520 && swapped.height == 260 && swapped.x == 240 && swapped.imageFile != oldFile)
+assert(!FileManager.default.fileExists(atPath: store.root.appendingPathComponent("assets/" + oldFile).path))
+print("PASS put --replace swaps the image, keeps id and origin, and drops the old asset")
+let removed = try command("remove", extra: ["target": belowID, "protocolVersion": 2])
+assert(removed["status"] as? String == "ok" && store.state.artifacts.count == 3 && store.drawing.strokes.count == strokesBefore)
+let missing = try command("remove", extra: ["target": belowID, "protocolVersion": 2])
+assert(missing["code"] as? String == "unknown_reference")
+print("PASS remove deletes one reference, keeps ink, and reports unknown ids")
+let future = try command("status", extra: ["protocolVersion": 3])
+assert(future["status"] as? String == "error")
+print("PASS unknown protocol versions are rejected")
 
 try Data("{incomplete".utf8).write(to: bridgeRoot.appendingPathComponent("inbox/00000000-partial.json"))
 let responsive = try command("status")

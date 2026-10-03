@@ -1,6 +1,6 @@
 # Working on MyPad
 
-MyPad is one native iPad board shared with coding agents through a global Mac CLI. Agents place PNG references; the user draws with Pencil and frames feedback by panning and zooming. Capture reads that view. Backup preserves the editable board. Keep this core small and agent-neutral.
+MyPad is one native iPad board shared with coding agents through a global Mac CLI. Agents write Markdown/HTML/SVG (rendered on the iPad) or place PNG references; the user draws with Pencil and frames feedback by panning and zooming. Capture reads that view. Backup preserves the editable board. Keep this core small and agent-neutral.
 
 ## Read when relevant
 
@@ -16,6 +16,7 @@ MyPad is one native iPad board shared with coding agents through a global Mac CL
 | --- | --- |
 | `MyPad/CanvasViewController.swift` | Board presentation, Pencil input, pan/zoom, floating controls, viewport rendering, foreground bridge polling |
 | `MyPad/DrawingStore.swift` | Editable board state, revisions, migration, serialized disk writes, durable saves |
+| `MyPad/WriteRenderer.swift` | Offscreen WebKit render of `write` sources (Markdown via bundled `Resources/marked.min.js`) into PNG |
 | `MyPad/AgentBridge.swift` | File-mailbox commands, validation, receipts, reference placement, capture, backup, clear, restore |
 | `scripts/mypad.py` | Standalone Python CLI, device transport, local exports, archive validation |
 | `skills/mypad/SKILL.md` | Instructions for agents using the installed CLI |

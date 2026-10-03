@@ -4,7 +4,7 @@ A minimal native iPad canvas for working with coding agents. Ask an agent to put
 
 One working surface. Pencil draws; fingers pan and pinch to zoom. Undo/redo float at the bottom left. A small pen button at the bottom right opens the native drawing tools, which start hidden. There is no top bar or agent status text.
 
-Ink and references save locally and reopen after relaunch. The board is 3,000 × 3,000 points. References are PNG images; diagrams are generated on the Mac. Separate `.mypad` backups retain editable ink, references, and the saved view. Restore replaces the working surface.
+Ink and references save locally and reopen after relaunch. The board is 3,000 × 3,000 points. References are PNG images, either uploaded or rendered on the iPad from Markdown, HTML or SVG by `mypad write`. Separate `.mypad` backups retain editable ink, references, and the saved view. Restore replaces the working surface.
 
 ## Install once on the Mac
 
@@ -24,6 +24,7 @@ Keep MyPad open and the iPad unlocked while using commands. USB is verified for 
 
 ```sh
 mypad status
+echo '# Notes' | mypad write
 mypad put /absolute/path/wireframe.png --title 'Wireframe'
 mypad capture --output ./ipad-feedback
 mypad backup --output ./architecture.mypad
@@ -38,7 +39,7 @@ mypad status --command-id COMMAND_UUID
 
 Commands return JSON. After capture, the agent must open the returned `image` path with its image-reading tool. Default captures live in `~/Library/Application Support/MyPad/exports/`; `--output` lets an agent keep them inside its workspace.
 
-`put` fits an image in the current view by default. Optional `--x`, `--y`, `--width`, and `--height` use board points. SVG, Mermaid, and other diagram sources should be rendered to PNG first. Native box-and-arrow JSON rendering remains available through the historical `scripts/canvas-bridge.py` prototype, but PNG is the public placement format.
+`write` sends Markdown (default, from stdin or a file), HTML or SVG; the iPad renders it once with WebKit into a PNG reference, centered in the current view or placed with `--x/--y`, `--below ID` or `--right-of ID`. `--replace ID` re-renders an existing reference in place and `remove ID` deletes one; neither touches ink. `put` fits a PNG in the current view by default; optional `--x`, `--y`, `--width`, and `--height` use board points, and `--replace ID` swaps an image. `clear --backup PATH` backs up, then clears at that backup's revision. Output is single-line JSON.
 
 Backup is separate from clear. Save a backup before restoring a different board. New handwriting changes the board revision: clear/restore reject an old revision instead of discarding newer work. Commands expire if the app does not consume them promptly. A timeout is an unknown outcome; inspect its receipt before issuing another destructive request.
 

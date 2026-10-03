@@ -37,3 +37,7 @@ Requires Xcode with the iOS SDK, an Apple development account in Xcode, and an u
 - `MyPad/DrawingStore.swift`: local loading and ordered atomic writes.
 
 The drawing lives in the app's Application Support directory as `Canvas.drawing`. Reinstalling over the existing app preserves it; deleting the app removes its local data.
+
+## Agent canvas prototype
+
+The `prototype/agent-canvas` branch adds a USB file bridge: a laptop agent places PNGs or box-and-arrow diagrams beneath the ink; **Send to Agent** exports the visible canvas for retrieval. Start with `python3 scripts/canvas-bridge.py demo`. See [prototype/README.md](prototype/README.md) for the round-trip workflow, protocol, and limits.

@@ -3,3 +3,5 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+prototype/.local/
+__pycache__/

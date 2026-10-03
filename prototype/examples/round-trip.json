@@ -1,0 +1,17 @@
+{
+  "width": 1100,
+  "height": 650,
+  "nodes": [
+    {"id": "heading", "label": "Shared canvas: agent → iPad → agent", "x": 40, "y": 25, "width": 1020, "height": 65},
+    {"id": "agent", "label": "Laptop agent\ncreates a diagram", "x": 40, "y": 160, "width": 240, "height": 115},
+    {"id": "inbox", "label": "USB file bridge\nimage or diagram JSON", "x": 425, "y": 160, "width": 250, "height": 115},
+    {"id": "ipad", "label": "iPad canvas\nyou draw on top", "x": 820, "y": 160, "width": 240, "height": 115},
+    {"id": "snapshot", "label": "Send to Agent\ndiagram + handwriting PNG", "x": 380, "y": 445, "width": 340, "height": 120}
+  ],
+  "edges": [
+    {"from": "agent", "to": "inbox", "label": "place"},
+    {"from": "inbox", "to": "ipad", "label": "display"},
+    {"from": "ipad", "to": "snapshot", "label": "annotate + export"},
+    {"from": "snapshot", "to": "agent", "label": "read + respond"}
+  ]
+}

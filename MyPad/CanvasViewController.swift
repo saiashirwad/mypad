@@ -3,6 +3,11 @@ import PencilKit
 
 final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
     private let canvas = PKCanvasView()
+    private let scroll = UIScrollView()
+    private let workspace = UIView(frame: CGRect(x: 0, y: 0, width: 3000, height: 3000))
+    private var bridge: AgentBridgePrototype?
+    private var bridgeTimer: Timer?
+    private var artifactViews: [String: UIImageView] = [:]
     private static let ballpointColor = UIColor(red: 0.10, green: 0.17, blue: 0.32, alpha: 1)
     private static let ballpointWidth: CGFloat = 1.2
     private lazy var toolPicker: PKToolPicker = {
@@ -82,25 +87,39 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         )
         homeButton.accessibilityLabel = "Reset zoom and position"
         navigationItem.leftBarButtonItems = [undoButton, redoButton]
-        navigationItem.rightBarButtonItems = [homeButton, fingerButton]
+        let sendButton = UIBarButtonItem(title: "Send to Agent", style: .plain, target: self, action: #selector(sendToAgent))
+        sendButton.accessibilityHint = "Export the visible diagram and handwriting for the laptop agent."
+        navigationItem.rightBarButtonItems = [sendButton, homeButton, fingerButton]
 
-        canvas.translatesAutoresizingMaskIntoConstraints = false
-        canvas.backgroundColor = UIColor(red: 0.99, green: 0.98, blue: 0.95, alpha: 1)
-        canvas.isOpaque = true
+        let paper = UIColor(red: 0.99, green: 0.98, blue: 0.95, alpha: 1)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.backgroundColor = paper
+        scroll.contentSize = paperSize
+        scroll.minimumZoomScale = 0.25
+        scroll.maximumZoomScale = 4
+        scroll.alwaysBounceHorizontal = true
+        scroll.alwaysBounceVertical = true
+        scroll.delaysContentTouches = false
+        scroll.delegate = self
+        scroll.panGestureRecognizer.minimumNumberOfTouches = 2
+        scroll.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        workspace.backgroundColor = paper
+        workspace.clipsToBounds = true
+        scroll.addSubview(workspace)
+        canvas.frame = workspace.bounds
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
         canvas.contentSize = paperSize
-        canvas.minimumZoomScale = 0.25
-        canvas.maximumZoomScale = 4
-        canvas.alwaysBounceHorizontal = true
-        canvas.alwaysBounceVertical = true
+        canvas.isScrollEnabled = false
         canvas.drawingPolicy = .anyInput
-        canvas.panGestureRecognizer.minimumNumberOfTouches = 2
         canvas.tool = PKInkingTool(.monoline, color: Self.ballpointColor, width: Self.ballpointWidth)
-        view.addSubview(canvas)
+        workspace.addSubview(canvas)
+        view.addSubview(scroll)
         NSLayoutConstraint.activate([
-            canvas.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            canvas.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            canvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
         do {
@@ -113,6 +132,17 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
             statusLabel.text = "Could not open saved canvas"
         }
         canvas.delegate = self
+        do {
+            let bridge = try AgentBridgePrototype()
+            self.bridge = bridge
+            for artifact in bridge.artifacts {
+                if let image = bridge.image(for: artifact) { addArtifact(artifact, image: image, focus: false) }
+            }
+            navigationItem.prompt = "Agent bridge ready · USB file mailbox"
+        } catch {
+            navigationItem.prompt = "Agent bridge unavailable: \(error.localizedDescription)"
+            sendButton.isEnabled = false
+        }
         toolPicker.showsDrawingPolicyControls = false
         toolPicker.addObserver(canvas)
         updateUndoButtons()
@@ -126,6 +156,13 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         super.viewDidAppear(animated)
         canvas.becomeFirstResponder()
         toolPicker.setVisible(true, forFirstResponder: canvas)
+        bridgeTimer?.invalidate()
+        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.bridge?.poll(add: { artifact, image in
+                self.addArtifact(artifact, image: image, focus: true)
+            }, capture: { try self.captureForAgent() })
+        }
         if let error = loadError {
             loadError = nil
             let alert = UIAlertController(
@@ -138,31 +175,95 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         }
     }
 
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        bridgeTimer?.invalidate()
+        bridgeTimer = nil
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        scrollView === scroll ? workspace : nil
+    }
+
+    private func addArtifact(_ artifact: CanvasArtifact, image: UIImage, focus: Bool) {
+        guard artifactViews[artifact.id] == nil else { return }
+        let imageView = UIImageView(image: image)
+        imageView.frame = artifact.frame
+        imageView.contentMode = .scaleToFill
+        imageView.isUserInteractionEnabled = false
+        workspace.insertSubview(imageView, belowSubview: canvas)
+        artifactViews[artifact.id] = imageView
+        if focus {
+            scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -80), animated: true)
+            navigationItem.prompt = "Agent placed: \(artifact.title) · annotate, then Send to Agent"
+        }
+    }
+
+    @objc private func sendToAgent() {
+        do {
+            let snapshot = try captureForAgent()
+            navigationItem.prompt = "Ready for agent · \(snapshot.strokeCount) strokes · visible canvas exported"
+        } catch {
+            navigationItem.prompt = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func captureForAgent() throws -> AgentBridgePrototype.Snapshot {
+        guard let bridge else { throw BridgeFailure("Bridge unavailable") }
+        let zoom = scroll.zoomScale
+        let rect = CGRect(x: scroll.contentOffset.x / zoom, y: scroll.contentOffset.y / zoom,
+                          width: scroll.bounds.width / zoom, height: scroll.bounds.height / zoom)
+            .intersection(CGRect(origin: .zero, size: paperSize))
+        guard !rect.isNull, rect.width > 0, rect.height > 0 else { throw BridgeFailure("No canvas visible") }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = min(2, 2400 / max(rect.width, rect.height))
+        var image: UIImage!
+        // Offscreen PencilKit rendering uses the current traits, not the window's.
+        // Match the light paper shown on the device, including older black strokes.
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            image = UIGraphicsImageRenderer(size: rect.size, format: format).image { context in
+                workspace.backgroundColor?.setFill()
+                context.fill(CGRect(origin: .zero, size: rect.size))
+                for artifact in bridge.artifacts {
+                    if let image = artifactViews[artifact.id]?.image {
+                        image.draw(in: artifact.frame.offsetBy(dx: -rect.minX, dy: -rect.minY))
+                    }
+                }
+                canvas.drawing.image(from: rect, scale: format.scale).draw(in: CGRect(origin: .zero, size: rect.size))
+            }
+        }
+        return try bridge.export(image: image, drawing: canvas.drawing, viewport: rect)
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if initialLayout && canvas.bounds.width > 0 {
+        if initialLayout && scroll.bounds.width > 0 {
             initialLayout = false
             resetView()
         }
     }
 
     @objc private func resetView() {
-        canvas.setZoomScale(1, animated: false)
+        if let artifact = bridge?.artifacts.last {
+            scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -80), animated: false)
+            return
+        }
+        scroll.setZoomScale(1, animated: false)
         let drawingBounds = canvas.drawing.bounds
         let center = drawingBounds.isNull
             ? CGPoint(x: paperSize.width / 2, y: paperSize.height / 2)
             : CGPoint(x: drawingBounds.midX, y: drawingBounds.midY)
         let offset = CGPoint(
-            x: max(0, min(paperSize.width - canvas.bounds.width, center.x - canvas.bounds.width / 2)),
-            y: max(0, min(paperSize.height - canvas.bounds.height, center.y - canvas.bounds.height / 2))
+            x: max(0, min(paperSize.width - scroll.bounds.width, center.x - scroll.bounds.width / 2)),
+            y: max(0, min(paperSize.height - scroll.bounds.height, center.y - scroll.bounds.height / 2))
         )
-        canvas.setContentOffset(offset, animated: false)
+        scroll.setContentOffset(offset, animated: false)
     }
 
     @objc private func toggleFingerDrawing() {
         fingerDrawing.toggle()
         canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
-        canvas.panGestureRecognizer.minimumNumberOfTouches = fingerDrawing ? 2 : 1
+        scroll.panGestureRecognizer.minimumNumberOfTouches = fingerDrawing ? 2 : 1
         fingerButton.title = fingerDrawing ? "Finger: On" : "Pencil Only"
     }
 
@@ -217,6 +318,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
     }
 
     deinit {
+        bridgeTimer?.invalidate()
         pendingSave?.cancel()
         NotificationCenter.default.removeObserver(self)
     }

@@ -1,6 +1,6 @@
 # Visual reference and Pencil feedback prior art
 
-Research for [Learn from existing visual annotation and agent canvas workflows](https://github.com/saiashirwad/mypad/issues/2), under [Design the smallest daily iPad and coding-agent loop](https://github.com/saiashirwad/mypad/issues/1). Checked 2026-10-04 against primary documentation. This is desk research: no product, iPad, network, or agent-client interaction was tested.
+Research for [Learn from existing visual annotation and agent canvas workflows](https://github.com/saiashirwad/mypad/issues/2), under [Make the iPad a daily canvas for coding agents](https://github.com/saiashirwad/mypad/issues/1). Checked 2026-10-04 against primary documentation. This is desk research: no product, iPad, network, or agent-client interaction was tested.
 
 ## Answer
 

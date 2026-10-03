@@ -1,11 +1,11 @@
 import UIKit
 import PencilKit
 
-final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
+final class CanvasViewController: UIViewController, PKCanvasViewDelegate, UIGestureRecognizerDelegate {
     private let canvas = PKCanvasView()
     private let scroll = UIScrollView()
     private let workspace = UIView(frame: CGRect(x: 0, y: 0, width: 3000, height: 3000))
-    private var bridge: AgentBridgePrototype?
+    private var bridge: AgentBridge?
     private var bridgeTimer: Timer?
     private var artifactViews: [String: UIImageView] = [:]
     private static let ballpointColor = UIColor(red: 0.10, green: 0.17, blue: 0.32, alpha: 1)
@@ -37,60 +37,51 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         picker.selectedTool = PKInkingTool(.monoline, color: Self.ballpointColor, width: Self.ballpointWidth)
         return picker
     }()
-    private let statusLabel = UILabel()
     private let paperSize = CGSize(width: 3000, height: 3000)
     private var store: DrawingStore?
     private var pendingSave: DispatchWorkItem?
-    private var revision = 0
-    private var fingerDrawing = true
+    private var toolsVisible = false
+    private var applyingBoard = false
+    private var drawingActive = false
     private var initialLayout = true
     private var loadError: Error?
 
-    private lazy var undoButton = UIBarButtonItem(
-        image: UIImage(systemName: "arrow.uturn.backward"),
-        style: .plain, target: self, action: #selector(undo)
-    )
-    private lazy var redoButton = UIBarButtonItem(
-        image: UIImage(systemName: "arrow.uturn.forward"),
-        style: .plain, target: self, action: #selector(redo)
-    )
-    private lazy var fingerButton = UIBarButtonItem(
-        title: "Finger: On", style: .plain, target: self, action: #selector(toggleFingerDrawing)
-    )
+    private lazy var undoButton = makeButton("arrow.uturn.backward", label: "Undo", action: #selector(undo))
+    private lazy var redoButton = makeButton("arrow.uturn.forward", label: "Redo", action: #selector(redo))
+    private lazy var toolsButton = makeButton("pencil.tip", label: "Drawing tools", action: #selector(toggleTools))
+    override var prefersStatusBarHidden: Bool { true }
+
+    private func makeButton(_ symbol: String, label: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)), for: .normal)
+        button.tintColor = UIColor(red: 0.22, green: 0.36, blue: 0.28, alpha: 1)
+        button.accessibilityLabel = label
+        button.addTarget(self, action: action, for: .touchUpInside)
+        NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 44), button.heightAnchor.constraint(equalToConstant: 44)])
+        return button
+    }
+
+    private func floatingControls(_ buttons: [UIButton]) -> UIView {
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialLight))
+        blur.translatesAutoresizingMaskIntoConstraints = false
+        blur.layer.cornerRadius = 18
+        blur.clipsToBounds = true
+        blur.layer.borderWidth = 0.5
+        blur.layer.borderColor = UIColor.black.withAlphaComponent(0.08).cgColor
+        let stack = UIStackView(arrangedSubviews: buttons)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        blur.contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: blur.contentView.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: blur.contentView.bottomAnchor, constant: -4),
+            stack.leadingAnchor.constraint(equalTo: blur.contentView.leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: blur.contentView.trailingAnchor, constant: -4)
+        ])
+        return blur
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
-        navigationController?.navigationBar.tintColor = UIColor(red: 0.19, green: 0.35, blue: 0.31, alpha: 1)
-        let appearance = UINavigationBarAppearance()
-        appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = .systemBackground
-        navigationController?.navigationBar.standardAppearance = appearance
-        navigationController?.navigationBar.scrollEdgeAppearance = appearance
-
-        let titleLabel = UILabel()
-        titleLabel.text = "MyPad"
-        titleLabel.font = .systemFont(ofSize: 19, weight: .semibold)
-        statusLabel.text = "Draw anywhere · two fingers to move"
-        statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.textColor = .secondaryLabel
-        let titleStack = UIStackView(arrangedSubviews: [titleLabel, statusLabel])
-        titleStack.axis = .vertical
-        titleStack.spacing = 2
-        navigationItem.titleView = titleStack
-        undoButton.accessibilityLabel = "Undo"
-        redoButton.accessibilityLabel = "Redo"
-        fingerButton.accessibilityHint = "When off, draw with Apple Pencil and pan with one finger."
-        let homeButton = UIBarButtonItem(
-            image: UIImage(systemName: "arrow.up.left.and.arrow.down.right"),
-            style: .plain, target: self, action: #selector(resetView)
-        )
-        homeButton.accessibilityLabel = "Reset zoom and position"
-        navigationItem.leftBarButtonItems = [undoButton, redoButton]
-        let sendButton = UIBarButtonItem(title: "Send to Agent", style: .plain, target: self, action: #selector(sendToAgent))
-        sendButton.accessibilityHint = "Export the visible diagram and handwriting for the laptop agent."
-        navigationItem.rightBarButtonItems = [sendButton, homeButton, fingerButton]
-
         let paper = UIColor(red: 0.99, green: 0.98, blue: 0.95, alpha: 1)
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.backgroundColor = paper
@@ -101,7 +92,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         scroll.alwaysBounceVertical = true
         scroll.delaysContentTouches = false
         scroll.delegate = self
-        scroll.panGestureRecognizer.minimumNumberOfTouches = 2
+        scroll.panGestureRecognizer.minimumNumberOfTouches = 1
         scroll.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         workspace.backgroundColor = paper
         workspace.clipsToBounds = true
@@ -111,38 +102,41 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         canvas.isOpaque = false
         canvas.contentSize = paperSize
         canvas.isScrollEnabled = false
-        canvas.drawingPolicy = .anyInput
+        canvas.drawingPolicy = .pencilOnly
         canvas.tool = PKInkingTool(.monoline, color: Self.ballpointColor, width: Self.ballpointWidth)
         workspace.addSubview(canvas)
         view.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
+        let undoControls = floatingControls([undoButton, redoButton])
+        let toolControls = floatingControls([toolsButton])
+        view.addSubview(undoControls)
+        view.addSubview(toolControls)
+        NSLayoutConstraint.activate([
+            undoControls.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            undoControls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            toolControls.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            toolControls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16)
+        ])
         do {
             let store = try DrawingStore()
-            canvas.drawing = try store.load()
+            canvas.drawing = store.drawing
             self.store = store
-            if !canvas.drawing.strokes.isEmpty { statusLabel.text = "Saved on this iPad" }
-        } catch {
-            loadError = error
-            statusLabel.text = "Could not open saved canvas"
-        }
-        canvas.delegate = self
-        do {
-            let bridge = try AgentBridgePrototype()
+            let bridge = try AgentBridge(store: store)
             self.bridge = bridge
-            for artifact in bridge.artifacts {
-                if let image = bridge.image(for: artifact) { addArtifact(artifact, image: image, focus: false) }
-            }
-            navigationItem.prompt = "Agent bridge ready · USB file mailbox"
-        } catch {
-            navigationItem.prompt = "Agent bridge unavailable: \(error.localizedDescription)"
-            sendButton.isEnabled = false
-        }
+            refreshBoard(focus: false)
+        } catch { loadError = error }
+        canvas.delegate = self
+        let dismissTools = UITapGestureRecognizer(target: self, action: #selector(dismissTools))
+        dismissTools.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        dismissTools.cancelsTouchesInView = false
+        dismissTools.delegate = self
+        view.addGestureRecognizer(dismissTools)
         toolPicker.showsDrawingPolicyControls = false
         toolPicker.addObserver(canvas)
         updateUndoButtons()
@@ -155,13 +149,13 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         canvas.becomeFirstResponder()
-        toolPicker.setVisible(true, forFirstResponder: canvas)
+        toolPicker.setVisible(toolsVisible, forFirstResponder: canvas)
         bridgeTimer?.invalidate()
         bridgeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.bridge?.poll(add: { artifact, image in
-                self.addArtifact(artifact, image: image, focus: true)
-            }, capture: { try self.captureForAgent() })
+            guard !self.drawingActive else { return }
+            self.bridge?.poll(view: self.boardView, visibleRect: self.visibleRect,
+                changed: { self.refreshBoard(focus: $0) }, render: { try self.renderBoard(rect: $0) })
         }
         if let error = loadError {
             loadError = nil
@@ -195,25 +189,50 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         artifactViews[artifact.id] = imageView
         if focus {
             scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -80), animated: true)
-            navigationItem.prompt = "Agent placed: \(artifact.title) · annotate, then Send to Agent"
         }
     }
 
-    @objc private func sendToAgent() {
-        do {
-            let snapshot = try captureForAgent()
-            navigationItem.prompt = "Ready for agent · \(snapshot.strokeCount) strokes · visible canvas exported"
-        } catch {
-            navigationItem.prompt = "Export failed: \(error.localizedDescription)"
-        }
-    }
-
-    private func captureForAgent() throws -> AgentBridgePrototype.Snapshot {
-        guard let bridge else { throw BridgeFailure("Bridge unavailable") }
+    private var visibleRect: CGRect {
         let zoom = scroll.zoomScale
-        let rect = CGRect(x: scroll.contentOffset.x / zoom, y: scroll.contentOffset.y / zoom,
-                          width: scroll.bounds.width / zoom, height: scroll.bounds.height / zoom)
+        return CGRect(x: scroll.contentOffset.x / zoom, y: scroll.contentOffset.y / zoom,
+            width: scroll.bounds.width / zoom, height: scroll.bounds.height / zoom)
             .intersection(CGRect(origin: .zero, size: paperSize))
+    }
+
+    private var boardView: BoardView {
+        BoardView(centerX: (scroll.contentOffset.x + scroll.bounds.width / 2) / scroll.zoomScale,
+                  centerY: (scroll.contentOffset.y + scroll.bounds.height / 2) / scroll.zoomScale,
+                  zoomScale: scroll.zoomScale)
+    }
+
+    private func refreshBoard(focus: Bool) {
+        guard let store else { return }
+        applyingBoard = true
+        if !focus {
+            canvas.drawing = store.drawing
+            canvas.undoManager?.removeAllActions()
+        }
+        for view in artifactViews.values { view.removeFromSuperview() }
+        artifactViews.removeAll()
+        for artifact in store.state.artifacts {
+            if let image = store.image(for: artifact) { addArtifact(artifact, image: image, focus: false) }
+        }
+        if focus, let artifact = store.state.artifacts.last {
+            scroll.zoom(to: artifact.frame.insetBy(dx: -40, dy: -40), animated: false)
+        } else { applyView(store.state.view) }
+        applyingBoard = false
+        updateUndoButtons()
+    }
+
+    private func applyView(_ saved: BoardView) {
+        scroll.setZoomScale(saved.zoomScale, animated: false)
+        let scaled = CGSize(width: paperSize.width * scroll.zoomScale, height: paperSize.height * scroll.zoomScale)
+        scroll.setContentOffset(CGPoint(
+            x: max(0, min(scaled.width - scroll.bounds.width, saved.centerX * scroll.zoomScale - scroll.bounds.width / 2)),
+            y: max(0, min(scaled.height - scroll.bounds.height, saved.centerY * scroll.zoomScale - scroll.bounds.height / 2))), animated: false)
+    }
+
+    private func renderBoard(rect: CGRect) throws -> UIImage {
         guard !rect.isNull, rect.width > 0, rect.height > 0 else { throw BridgeFailure("No canvas visible") }
         let format = UIGraphicsImageRendererFormat()
         format.scale = min(2, 2400 / max(rect.width, rect.height))
@@ -224,7 +243,7 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
             image = UIGraphicsImageRenderer(size: rect.size, format: format).image { context in
                 workspace.backgroundColor?.setFill()
                 context.fill(CGRect(origin: .zero, size: rect.size))
-                for artifact in bridge.artifacts {
+                for artifact in store?.state.artifacts ?? [] {
                     if let image = artifactViews[artifact.id]?.image {
                         image.draw(in: artifact.frame.offsetBy(dx: -rect.minX, dy: -rect.minY))
                     }
@@ -232,14 +251,14 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
                 canvas.drawing.image(from: rect, scale: format.scale).draw(in: CGRect(origin: .zero, size: rect.size))
             }
         }
-        return try bridge.export(image: image, drawing: canvas.drawing, viewport: rect)
+        return image
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         if initialLayout && scroll.bounds.width > 0 {
             initialLayout = false
-            resetView()
+            if let saved = store?.state.view { applyView(saved) } else { resetView() }
         }
     }
 
@@ -260,11 +279,26 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
         scroll.setContentOffset(offset, animated: false)
     }
 
-    @objc private func toggleFingerDrawing() {
-        fingerDrawing.toggle()
-        canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
-        scroll.panGestureRecognizer.minimumNumberOfTouches = fingerDrawing ? 2 : 1
-        fingerButton.title = fingerDrawing ? "Finger: On" : "Pencil Only"
+    @objc private func toggleTools() {
+        toolsVisible.toggle()
+        canvas.becomeFirstResponder()
+        toolPicker.setVisible(toolsVisible, forFirstResponder: canvas)
+        toolsButton.accessibilityValue = toolsVisible ? "Expanded" : "Collapsed"
+    }
+
+    @objc private func dismissTools() {
+        guard toolsVisible else { return }
+        toggleTools()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard toolsVisible else { return false }
+        var touched = touch.view
+        while let current = touched {
+            if current is UIControl { return false }
+            touched = current.superview
+        }
+        return true
     }
 
     @objc private func undo() {
@@ -283,38 +317,50 @@ final class CanvasViewController: UIViewController, PKCanvasViewDelegate {
     }
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-        guard store != nil else { return }
-        revision += 1
-        pendingSave?.cancel()
-        statusLabel.text = "Saving…"
-        let work = DispatchWorkItem { [weak self] in self?.save() }
-        pendingSave = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        guard let store, !applyingBoard else { return }
+        store.updateDrawing(canvas.drawing)
+        scheduleSave()
         DispatchQueue.main.async { [weak self] in self?.updateUndoButtons() }
     }
 
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) { drawingActive = true }
+
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        drawingActive = false
         updateUndoButtons()
     }
 
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { scheduleSave() }
+    }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { scheduleSave() }
+    func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { scheduleSave() }
+
+    private func scheduleSave() {
+        pendingSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.save() }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
     private func save() {
-        let savedRevision = revision
-        store?.save(canvas.drawing.dataRepresentation()) { [weak self] error in
-            guard let self, savedRevision == self.revision else { return }
-            self.statusLabel.text = error == nil ? "Saved on this iPad" : "Save failed — try again"
-            self.statusLabel.accessibilityValue = error?.localizedDescription
+        store?.updateView(boardView)
+        store?.save { [weak self] error in
+            if let error { self?.showError(error) }
         }
+    }
+
+    private func showError(_ error: Error) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Couldn't save your board", message: error.localizedDescription, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     @objc private func flushSave() {
         pendingSave?.cancel()
-        guard let store else { return }
-        do {
-            try store.flush(canvas.drawing.dataRepresentation())
-            statusLabel.text = "Saved on this iPad"
-        } catch {
-            statusLabel.text = "Save failed — try again"
-        }
+        store?.updateView(boardView)
+        do { try store?.flush() } catch { showError(error) }
     }
 
     deinit {

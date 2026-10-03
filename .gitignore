@@ -5,3 +5,6 @@ DerivedData/
 xcuserdata/
 prototype/.local/
 __pycache__/
+
+build-check/
+build-catalyst/

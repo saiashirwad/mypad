@@ -1,43 +1,59 @@
 # MyPad
 
-A small native iPad drawing canvas built with UIKit and PencilKit.
+A minimal native iPad canvas for working with coding agents. Ask an agent to put a wireframe or diagram on the iPad, annotate it with Pencil, then say “look at my iPad.” The agent captures the area you're looking at and reads your visual feedback in the existing conversation.
 
-- Draw with Apple Pencil or your finger.
-- The first tool is a ballpoint-style preset: a fine 1.2-point monoline in dark blue on warm paper. Tap that tool again to adjust its width, or choose a different ink color in the palette.
-- Use the system tool palette for pens, colors, erasing, and lasso selection.
-- Pinch to zoom; pan with two fingers.
-- Tap **Finger: On** to switch to **Pencil Only**, where one finger pans.
-- Undo and redo from the top left. The top-right arrows reset zoom and position.
-- Strokes save automatically on this iPad and reopen on the next launch.
+One working surface. Pencil draws; fingers pan and pinch to zoom. Undo/redo float at the bottom left. A small pen button at the bottom right opens the native drawing tools, which start hidden. There is no top bar or agent status text.
 
-The workspace is 3,000 × 3,000 points. This first version has one canvas; it has no cloud service or account.
+Ink and references save locally and reopen after relaunch. The board is 3,000 × 3,000 points. References are PNG images; diagrams are generated on the Mac. Separate `.mypad` backups retain editable ink, references, and the saved view. Restore replaces the working surface.
 
-The ballpoint preset uses PencilKit's native monoline renderer. It keeps the nib width steady instead of using brush-like pressure variation; it doesn't simulate ink grain, skipping, or paper friction. The paper stays light in Dark Mode. On iPadOS 18 and later the ballpoint has its own palette item; the app opens with this preset selected.
+## Install once on the Mac
 
-## Run on the connected iPad
-
-Open `MyPad.xcodeproj` in Xcode and run the `MyPad` scheme, or:
-
-```sh
-./scripts/run-ipad.sh
-```
-
-To use another paired iPad:
+Requires Python 3, Xcode with the iOS SDK, and an unlocked, paired iPad with Developer Mode enabled. This is a personal development workflow using Xcode device services.
 
 ```sh
 ./scripts/run-ipad.sh YOUR_IPAD_UDID
+./scripts/install-cli.sh --skills
+mypad configure --device YOUR_IPAD_UDID
 ```
 
-Requires Xcode with the iOS SDK, an Apple development account in Xcode, and an unlocked, paired iPad with Developer Mode enabled. Signing currently uses the development team already configured on this Mac; change the team in Xcode's Signing & Capabilities if needed.
+The CLI is installed to `~/.local/bin/mypad`; that directory must be on PATH. `--skills` installs a shared skill in `~/.agents/skills/mypad`, with discovery links for Codex, Claude Code, and pi. Start a new agent session if it has already loaded its skill catalog. Device configuration lives in `~/.config/mypad/config.json`; no project setup is needed.
 
-## Source
+Keep MyPad open and the iPad unlocked while using commands. USB is verified for live placement, capture, backup, clear, and restore. Paired-device Wi-Fi uses the same transport if Xcode discovers it, but has not been physically verified here.
 
-- `MyPad/AppDelegate.swift`: app entry point.
-- `MyPad/CanvasViewController.swift`: canvas, tools, navigation, and save scheduling.
-- `MyPad/DrawingStore.swift`: local loading and ordered atomic writes.
+## From any project
 
-The drawing lives in the app's Application Support directory as `Canvas.drawing`. Reinstalling over the existing app preserves it; deleting the app removes its local data.
+```sh
+mypad status
+mypad put /absolute/path/wireframe.png --title 'Wireframe'
+mypad capture --output ./ipad-feedback
+mypad backup --output ./architecture.mypad
 
-## Agent canvas prototype
+# Use the revision returned by capture/status/backup.
+mypad clear --if-revision 42
+mypad restore ./architecture.mypad --if-revision 43
 
-The `prototype/agent-canvas` branch adds a USB file bridge: a laptop agent places PNGs or box-and-arrow diagrams beneath the ink; **Send to Agent** exports the visible canvas for retrieval. Start with `python3 scripts/canvas-bridge.py demo`. See [prototype/README.md](prototype/README.md) for the round-trip workflow, protocol, and limits.
+# Reconcile an operation if its acknowledgement timed out.
+mypad status --command-id COMMAND_UUID
+```
+
+Commands return JSON. After capture, the agent must open the returned `image` path with its image-reading tool. Default captures live in `~/Library/Application Support/MyPad/exports/`; `--output` lets an agent keep them inside its workspace.
+
+`put` fits an image in the current view by default. Optional `--x`, `--y`, `--width`, and `--height` use board points. SVG, Mermaid, and other diagram sources should be rendered to PNG first. Native box-and-arrow JSON rendering remains available through the historical `scripts/canvas-bridge.py` prototype, but PNG is the public placement format.
+
+Backup is separate from clear. Save a backup before restoring a different board. New handwriting changes the board revision: clear/restore reject an old revision instead of discarding newer work. Commands expire if the app does not consume them promptly. A timeout is an unknown outcome; inspect its receipt before issuing another destructive request.
+
+## Validation and implementation
+
+```sh
+python3 -m unittest discover -s tests -v
+./scripts/test-native.sh
+```
+
+The native tests run the actual PencilKit board store and bridge through Mac Catalyst libraries on the Mac; they do not replace physical iPad interaction checks.
+
+- [Validation evidence](docs/v1-validation.md)
+- [Design and command contract](docs/mypad-v1-spec.md)
+- [Wayfinder map](https://github.com/saiashirwad/mypad/issues/1)
+- [Terms](GLOSSARY.md)
+
+The app has been built, installed, and launched on the connected iPad. Fresh capture and full editable backup work from an unrelated directory. The physical put/capture/backup/clear/restore loop passed, with native stroke content, references, framing, and full-board preview preserved. Claude Code and pi discovery/image-reading workflows still need their own end-to-end check.

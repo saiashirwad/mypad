@@ -1,6 +1,6 @@
 # MyPad v1: a Pencil canvas for coding agents
 
-Status: build-ready product and storage design; command contract is proposed for the remaining interface ticket. No production changes have been made.
+Status: initial implementation on `feature/mypad-v1`. See `v1-validation.md` for verified behavior and remaining physical interaction checks.
 
 Canonical planning map: [Make the iPad a daily canvas for coding agents](https://github.com/saiashirwad/mypad/issues/1).
 
@@ -24,7 +24,7 @@ Use the selected [B — split corners prototype](https://github.com/saiashirwad/
 - Retain the existing fine monoline writing preset and light paper. Safe-area-aware placement in portrait, landscape, and window resizing. No dark-mode ink inversion in capture.
 - Undo/redo covers native ink edits in v1. Clear and restore reset the ink undo history so old strokes cannot reappear against a different board. Reference insertion undo is deferred.
 
-Do not show a green connectivity dot based merely on “the app opened” or an old acknowledgement. The current file bridge has no continuous link-health signal. Omit the dot from the first acceptance baseline; `mypad status` provides on-demand connection checking. A tiny indicator can follow a genuinely measured health protocol later without adding text to the canvas.
+Do not show a green connectivity dot based merely on “the app opened” or an old acknowledgement. The current file bridge has no continuous link-health signal. Omit the dot from the first acceptance baseline; `mypad status` provides on-demand connection checking; `status --command-id <id>` reconciles a timed-out operation. A tiny indicator can follow a genuinely measured health protocol later without adding text to the canvas.
 
 ## Three representations
 
@@ -51,6 +51,7 @@ Example manifest:
   "format": "mypad-board",
   "version": 1,
   "createdAt": "2026-10-04T10:00:00Z",
+  "revision": 42,
   "boardSize": {"width": 3000, "height": 3000},
   "view": {"centerX": 1500, "centerY": 1500, "zoomScale": 1},
   "inkFile": "ink.drawing",
@@ -76,7 +77,7 @@ Stage restore in a new local board generation and atomically switch the active m
 
 Native PencilKit ink is intended for restoration in MyPad. The preview/capture is the portable representation other image viewers and agents can read. Do not promise that arbitrary diagram editors can edit a `.mypad` backup.
 
-## Proposed global CLI
+## Global CLI
 
 Use a small Python-stdlib CLI wrapping the existing `devicectl` file mailbox. No Mac daemon is required for this transport.
 
@@ -166,5 +167,5 @@ Use meaningful storage/protocol tests for transaction and replay failures, plus 
 - [Product decision map](https://github.com/saiashirwad/mypad/issues/1) and its resolution comments.
 - [Prior-art research](https://github.com/saiashirwad/mypad/blob/research/ipad-prior-art/research/prior-art.md).
 - [Connection and agent-interface research](https://github.com/saiashirwad/mypad/blob/bf91ec1/research/connection-interface.md).
-- Existing source: `MyPad/CanvasViewController.swift`, `MyPad/AgentBridgePrototype.swift`, `MyPad/DrawingStore.swift`, `scripts/canvas-bridge.py`.
+- Existing source: `MyPad/CanvasViewController.swift`, `MyPad/AgentBridge.swift`, `MyPad/DrawingStore.swift`, `scripts/canvas-bridge.py`.
 - Existing physical-device evidence: `prototype/VERDICT.md`; not rerun during this planning effort.

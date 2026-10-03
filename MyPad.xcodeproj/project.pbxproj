@@ -23,7 +23,7 @@
   A00000000000000000000022 = {isa = PBXBuildFile; fileRef = A00000000000000000000032; };
   A00000000000000000000023 = {isa = PBXBuildFile; fileRef = A00000000000000000000033; };
   A00000000000000000000024 = {isa = PBXBuildFile; fileRef = A00000000000000000000034; };
-  A00000000000000000000034 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBridgePrototype.swift; sourceTree = "<group>"; };
+  A00000000000000000000034 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBridge.swift; sourceTree = "<group>"; };
   A00000000000000000000031 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
   A00000000000000000000032 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasViewController.swift; sourceTree = "<group>"; };
   A00000000000000000000033 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingStore.swift; sourceTree = "<group>"; };

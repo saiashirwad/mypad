@@ -21,7 +21,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let window = UIWindow(windowScene: windowScene)
         // Keep ink and paper consistent even when the iPad uses Dark Mode.
         window.overrideUserInterfaceStyle = .light
-        window.rootViewController = UINavigationController(rootViewController: CanvasViewController())
+        window.rootViewController = CanvasViewController()
         window.makeKeyAndVisible()
         self.window = window
     }
